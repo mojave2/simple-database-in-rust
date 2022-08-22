@@ -60,25 +60,32 @@ struct Statement {
     row_to_insert: Option<Row>,
 }
 
+// enum PrepareResult {
+//     Ok(Statement),
+//     StringTooLong(String),
+//     SyntaxError(String),
+//     UnrecognizedStatement(String),
+// }
+
+fn prepare_insert(command: &str) -> Result<Statement, String> {
+    let args: Vec<_> = command.split_whitespace().collect();
+    if args.len() != 4 {
+        return Err(format!("Insert Command Argument Error: {:?}", command));
+    }
+    let id: u32 = args[1]
+        .parse::<u32>()
+        .map_err(|_| "Syntax error. Could not parse statement.".to_owned())?;
+    let row_to_insert = Row::new(id, args[2], args[3])?;
+    Ok(Statement {
+        type_: StatementType::Insert,
+        row_to_insert: Some(row_to_insert),
+    })
+}
+
 fn prepare_statement(command: &str) -> Result<Statement, String> {
     let args: Vec<_> = command.split_whitespace().collect();
     if args[0] == "insert" {
-        if args.len() != 4 {
-            return Err(format!("Insert Command Argument Error: {:?}", command));
-        }
-        let id: u32 = match args[1].parse() {
-            Ok(x) => x,
-            Err(_) => return Err("Syntax error. Could not parse statement.".to_owned()),
-        };
-        let row_to_insert = Row {
-            id,
-            username: args[2].to_owned(),
-            email: args[3].to_owned(),
-        };
-        Ok(Statement {
-            type_: StatementType::Insert,
-            row_to_insert: Some(row_to_insert),
-        })
+        prepare_insert(command)
     } else if args[0] == "select" {
         Ok(Statement {
             type_: StatementType::Select,
@@ -118,8 +125,8 @@ fn execute_select(_stmt: Statement, table: &mut Table) -> Result<(), String> {
     Ok(())
 }
 
-//const COLUMN_USERNAME_SIZE: usize = 32;
-//const COLUMN_EMAIL_SIZE: usize = 255;
+const COLUMN_USERNAME_SIZE: usize = 32;
+const COLUMN_EMAIL_SIZE: usize = 255;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Row {
@@ -129,6 +136,25 @@ struct Row {
 }
 
 impl Row {
+    fn new(id: u32, username: &str, email: &str) -> Result<Self, String> {
+        if username.len() > COLUMN_USERNAME_SIZE {
+            return Err(format!(
+                "username string is too long. (>{})",
+                COLUMN_USERNAME_SIZE
+            ));
+        }
+        if email.len() > COLUMN_EMAIL_SIZE {
+            return Err(format!(
+                "email string is too long. (>{})",
+                COLUMN_EMAIL_SIZE
+            ));
+        }
+        Ok(Row {
+            id,
+            username: username.to_owned(),
+            email: email.to_owned(),
+        })
+    }
     fn serialize(&self, destination: &mut BytesMut) {
         let row_bin = bincode::serialize(&self).unwrap();
         destination.put(&row_bin[..]);
