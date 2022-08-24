@@ -2,8 +2,10 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    io::{self, BufRead, Cursor, Read, Seek, SeekFrom, Write},
+    io::{self, BufRead, Read, Seek, SeekFrom, Write},
     path::Path,
+    rc::Rc,
+    sync::RwLock,
 };
 
 fn main() -> io::Result<()> {
@@ -13,7 +15,7 @@ fn main() -> io::Result<()> {
         std::process::exit(-1);
     }
     let filename = &args[1];
-    let mut table = Table::open_db(filename);
+    let table = Table::open_db(filename);
     let mut buffer = String::new();
     loop {
         buffer.clear();
@@ -22,7 +24,7 @@ fn main() -> io::Result<()> {
         let command = buffer.trim();
 
         if command.starts_with('.') {
-            match do_meta_command(command, &mut table) {
+            match do_meta_command(command, table.clone()) {
                 Ok(_) => continue,
                 Err(e) => {
                     println!("{}", e);
@@ -33,7 +35,7 @@ fn main() -> io::Result<()> {
 
         match prepare_statement(command) {
             Ok(statement) => {
-                match execute_statement(statement, &mut table) {
+                match execute_statement(statement, table.clone()) {
                     Ok(_) => (),
                     Err(e) => println!("{}", e),
                 }
@@ -52,9 +54,9 @@ fn print_prompt() {
     io::stdout().flush().unwrap();
 }
 
-fn do_meta_command(command: &str, table: &mut Table) -> Result<(), String> {
+fn do_meta_command(command: &str, table: Rc<RwLock<Table>>) -> Result<(), String> {
     if command == ".exit" {
-        table.close_db()?;
+        table.write().unwrap().close_db()?;
         std::process::exit(0);
     } else {
         Err(format!("Unrecognized Meta Command: {:?}", command))
@@ -115,7 +117,7 @@ fn prepare_statement(command: &str) -> Result<Statement, PrepareError> {
     }
 }
 
-fn execute_statement(stmt: Statement, table: &mut Table) -> Result<(), String> {
+fn execute_statement(stmt: Statement, table: Rc<RwLock<Table>>) -> Result<(), String> {
     use StatementType::*;
     match stmt.type_ {
         Insert => execute_insert(stmt, table),
@@ -123,20 +125,22 @@ fn execute_statement(stmt: Statement, table: &mut Table) -> Result<(), String> {
     }
 }
 
-fn execute_insert(stmt: Statement, table: &mut Table) -> Result<(), String> {
-    if table.num_rows >= TABLE_MAX_ROWS {
+fn execute_insert(stmt: Statement, table: Rc<RwLock<Table>>) -> Result<(), String> {
+    if table.read().unwrap().num_rows >= TABLE_MAX_ROWS {
         return Err("Execute Table Full".to_owned());
     }
-    let row = table.row_slot(table.num_rows);
-    stmt.row_to_insert.unwrap().serialize(row);
-    table.num_rows += 1;
+    let cursor = Cursor::table_end(table.clone());
+    stmt.row_to_insert.unwrap().serialize(cursor.cursor_value());
+    table.write().unwrap().num_rows += 1;
     Ok(())
 }
 
-fn execute_select(_stmt: Statement, table: &mut Table) -> Result<(), String> {
-    for i in 0..table.num_rows {
-        let row = Row::deserialize(table.row_slot(i));
+fn execute_select(_stmt: Statement, table: Rc<RwLock<Table>>) -> Result<(), String> {
+    let mut cursor = Cursor::table_start(table);
+    while !cursor.end_of_table {
+        let row = Row::deserialize(cursor.cursor_value());
         println!("{:?}", row);
+        cursor.advance();
     }
     Ok(())
 }
@@ -174,8 +178,9 @@ impl Row {
         })
     }
 
-    fn serialize(&self, buf: &mut RowBuf) {
-        let mut cur = Cursor::new(buf);
+    fn serialize(&self, buf: RowBuf) {
+        let buf_arr = &mut buf.write().unwrap()[..];
+        let mut cur = io::Cursor::new(buf_arr);
         cur.write_u32::<LittleEndian>(self.id).unwrap();
         cur.seek(SeekFrom::Start(COLUMN_ID_SIZE as u64)).unwrap();
         let _ = cur.write(self.username.as_bytes()).unwrap();
@@ -186,8 +191,9 @@ impl Row {
         let _ = cur.write(self.email.as_bytes()).unwrap();
     }
 
-    fn deserialize(buf: &mut RowBuf) -> Self {
-        let mut cur = Cursor::new(buf);
+    fn deserialize(buf: RowBuf) -> Self {
+        let buf_arr = &buf.read().unwrap()[..];
+        let mut cur = io::Cursor::new(buf_arr);
         let id = cur.read_u32::<LittleEndian>().unwrap();
         cur.seek(SeekFrom::Start(COLUMN_ID_SIZE as u64)).unwrap();
         let mut username: Vec<u8> = Vec::new();
@@ -214,8 +220,8 @@ const TABLE_MAX_PAGES: usize = 100;
 const ROWS_PER_PAGE: usize = PAGE_SIZE / ROW_SIZE;
 const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
-type RowBuf = [u8];
-type Page = [u8; PAGE_SIZE];
+type RowBuf = Rc<RwLock<Vec<u8>>>;
+type Page = [Option<RowBuf>; ROWS_PER_PAGE];
 
 struct Table {
     num_rows: usize,
@@ -223,21 +229,13 @@ struct Table {
 }
 
 impl Table {
-    fn open_db<P>(fname: P) -> Self
+    fn open_db<P>(fname: P) -> Rc<RwLock<Self>>
     where
         P: AsRef<Path>,
     {
         let pager = Pager::open(fname);
         let num_rows = pager.file_length / ROW_SIZE;
-        Table { num_rows, pager }
-    }
-
-    fn row_slot(&mut self, row_num: usize) -> &mut RowBuf {
-        let page_num = row_num / ROWS_PER_PAGE;
-        let page = self.pager.get_page(page_num);
-        let row_offset = row_num % ROWS_PER_PAGE;
-        let byte_offset = row_offset * ROW_SIZE;
-        &mut page[byte_offset..byte_offset + ROW_SIZE]
+        Rc::new(RwLock::new(Table { num_rows, pager }))
     }
 
     fn close_db(&mut self) -> Result<(), String> {
@@ -295,21 +293,27 @@ impl Pager {
             std::process::exit(-1);
         }
         if self.pages[page_num].is_none() {
-            self.pages[page_num] = Some([0u8; PAGE_SIZE]);
+            const INIT_ROW: Option<RowBuf> = None;
+            self.pages[page_num] = Some([INIT_ROW; ROWS_PER_PAGE]);
+
             let mut num_pages = self.file_length / PAGE_SIZE;
             // we might save a partial page at the end of the file
             if self.file_length % PAGE_SIZE > 0 {
                 num_pages += 1;
             }
-
             if page_num <= num_pages {
                 self.file_handle
                     .seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64))
                     .unwrap();
-                let _ = self
-                    .file_handle
-                    .read(self.pages[page_num].as_mut().unwrap())
-                    .unwrap();
+                let mut page_buf: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
+                let _ = self.file_handle.read(&mut page_buf[..]).unwrap();
+                for i in 0..ROWS_PER_PAGE {
+                    let r = &page_buf[i * ROW_SIZE..(i + 1) * ROW_SIZE];
+                    if r != [0; ROW_SIZE] {
+                        let p = self.pages[page_num].as_mut().unwrap();
+                        p[i] = Some(Rc::new(RwLock::new(Vec::from(r))));
+                    }
+                }
             }
         }
         self.pages[page_num].as_mut().unwrap()
@@ -319,14 +323,67 @@ impl Pager {
         self.file_handle
             .seek(SeekFrom::Start((page_num * PAGE_SIZE) as u64))
             .expect("Error seeking offset");
+        let mut page_buf = [0; PAGE_SIZE];
+        for i in 0..(page_size / ROW_SIZE) {
+            let p = self.pages[page_num].as_ref().unwrap();
+            if p[i].is_some() {
+                let r = p[i].as_ref().unwrap();
+                let arr = r.read().unwrap();
+                page_buf[i * ROW_SIZE..(i + 1) * ROW_SIZE].copy_from_slice(&arr[..]);
+            }
+        }
         self.file_handle
-            .write(&self.pages[page_num].unwrap()[..page_size])
+            .write(&page_buf[..page_size])
             .map_err(|_| "Error writing page buffer".to_owned())?;
         Ok(())
     }
 
     fn close(&mut self) -> Result<(), String> {
         Ok(())
+    }
+}
+
+struct Cursor {
+    table: Rc<RwLock<Table>>,
+    row_num: usize,
+    end_of_table: bool,
+}
+
+impl Cursor {
+    fn table_start(table: Rc<RwLock<Table>>) -> Self {
+        let num_rows = table.read().unwrap().num_rows;
+        Self {
+            table,
+            row_num: 0,
+            end_of_table: num_rows == 0,
+        }
+    }
+
+    fn table_end(table: Rc<RwLock<Table>>) -> Self {
+        let row_num = table.read().unwrap().num_rows;
+        Self {
+            table,
+            row_num,
+            end_of_table: true,
+        }
+    }
+
+    fn cursor_value(&self) -> RowBuf {
+        let mut table = self.table.write().unwrap();
+        let page_num = self.row_num / ROWS_PER_PAGE;
+        let page = table.pager.get_page(page_num);
+        let row_offset = self.row_num % ROWS_PER_PAGE;
+        if page[row_offset].is_none() {
+            page[row_offset] = Some(Rc::new(RwLock::new(Vec::from([0; ROW_SIZE]))));
+        }
+        page[row_offset].as_ref().unwrap().clone()
+    }
+
+    fn advance(&mut self) {
+        self.row_num += 1;
+        if self.row_num >= self.table.read().unwrap().num_rows {
+            self.end_of_table = true;
+        }
     }
 }
 
