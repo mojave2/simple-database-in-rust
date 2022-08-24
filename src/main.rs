@@ -40,7 +40,7 @@ fn main() -> io::Result<()> {
                 println!("Executed.");
             }
             Err(e) => {
-                println!("{}", e);
+                println!("{:?}", e);
                 continue;
             }
         }
@@ -71,21 +71,25 @@ struct Statement {
     row_to_insert: Option<Row>,
 }
 
-// enum PrepareResult {
-//     Ok(Statement),
-//     StringTooLong(String),
-//     SyntaxError(String),
-//     UnrecognizedStatement(String),
-// }
+#[derive(Debug)]
+enum PrepareError {
+    StringTooLong(String),
+    SyntaxError(String),
+    UnrecognizedStatement(String),
+}
 
-fn prepare_insert(command: &str) -> Result<Statement, String> {
+fn prepare_insert(command: &str) -> Result<Statement, PrepareError> {
+    use PrepareError::*;
     let args: Vec<_> = command.split_whitespace().collect();
     if args.len() != 4 {
-        return Err(format!("Insert Command Argument Error: {:?}", command));
+        return Err(SyntaxError(format!(
+            "Insert Command Argument Error: {:?}",
+            command
+        )));
     }
     let id: u32 = args[1]
         .parse::<u32>()
-        .map_err(|_| "Syntax error. Could not parse statement.".to_owned())?;
+        .map_err(|_| SyntaxError("Syntax error. Could not parse statement.".to_owned()))?;
     let row_to_insert = Row::new(id, args[2], args[3])?;
     Ok(Statement {
         type_: StatementType::Insert,
@@ -93,7 +97,8 @@ fn prepare_insert(command: &str) -> Result<Statement, String> {
     })
 }
 
-fn prepare_statement(command: &str) -> Result<Statement, String> {
+fn prepare_statement(command: &str) -> Result<Statement, PrepareError> {
+    use PrepareError::*;
     let args: Vec<_> = command.split_whitespace().collect();
     if args[0] == "insert" {
         prepare_insert(command)
@@ -103,7 +108,10 @@ fn prepare_statement(command: &str) -> Result<Statement, String> {
             row_to_insert: None,
         })
     } else {
-        Err(format!("Unrecognized Statement: {:?}", command))
+        Err(UnrecognizedStatement(format!(
+            "Unrecognized Statement: {:?}",
+            command
+        )))
     }
 }
 
@@ -145,18 +153,19 @@ struct Row {
 }
 
 impl Row {
-    fn new(id: u32, username: &str, email: &str) -> Result<Self, String> {
+    fn new(id: u32, username: &str, email: &str) -> Result<Self, PrepareError> {
+        use PrepareError::*;
         if username.len() > COLUMN_USERNAME_SIZE - 1 {
-            return Err(format!(
+            return Err(StringTooLong(format!(
                 "username string is too long. (>{})",
                 COLUMN_USERNAME_SIZE - 1
-            ));
+            )));
         }
         if email.len() > COLUMN_EMAIL_SIZE - 1 {
-            return Err(format!(
+            return Err(StringTooLong(format!(
                 "email string is too long. (>{})",
                 COLUMN_EMAIL_SIZE - 1
-            ));
+            )));
         }
         Ok(Row {
             id,
