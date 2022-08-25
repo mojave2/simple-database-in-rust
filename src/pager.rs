@@ -6,8 +6,7 @@ use std::{
     sync::RwLock,
 };
 
-use super::row::ROW_SIZE;
-use super::ROWS_PER_PAGE;
+use super::row::{ROWS_PER_PAGE, ROW_SIZE};
 
 pub const PAGE_SIZE: usize = 4096;
 pub const TABLE_MAX_PAGES: usize = 100;

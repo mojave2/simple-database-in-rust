@@ -3,12 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Seek, SeekFrom, Write};
 
 use super::compiler::PrepareError;
-use super::pager::RowBuf;
+use super::pager::{RowBuf, PAGE_SIZE, TABLE_MAX_PAGES};
 
 const COLUMN_ID_SIZE: usize = std::mem::size_of::<u32>();
 const COLUMN_USERNAME_SIZE: usize = 32;
 const COLUMN_EMAIL_SIZE: usize = 255;
 pub const ROW_SIZE: usize = COLUMN_ID_SIZE + COLUMN_EMAIL_SIZE + COLUMN_USERNAME_SIZE;
+pub const ROWS_PER_PAGE: usize = PAGE_SIZE / ROW_SIZE;
+pub const TABLE_MAX_ROWS: usize = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Row {

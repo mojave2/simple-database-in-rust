@@ -2,8 +2,7 @@ use std::{path::Path, rc::Rc, sync::RwLock};
 
 use super::pager::Pager;
 use super::pager::PAGE_SIZE;
-use super::row::ROW_SIZE;
-use super::ROWS_PER_PAGE;
+use super::row::{ROWS_PER_PAGE, ROW_SIZE};
 
 pub struct Table {
     pub num_rows: usize,

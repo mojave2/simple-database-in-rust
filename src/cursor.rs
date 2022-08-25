@@ -2,9 +2,8 @@ use std::rc::Rc;
 use std::sync::RwLock;
 
 use super::pager::RowBuf;
-use super::row::ROW_SIZE;
+use super::row::{ROWS_PER_PAGE, ROW_SIZE};
 use super::table::Table;
-use super::ROWS_PER_PAGE;
 
 pub struct Cursor {
     pub table: Rc<RwLock<Table>>,

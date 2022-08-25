@@ -3,8 +3,8 @@ use std::{rc::Rc, sync::RwLock};
 use super::compiler::{Statement, StatementType};
 use super::cursor::Cursor;
 use super::row::Row;
+use super::row::TABLE_MAX_ROWS;
 use super::table::Table;
-use super::TABLE_MAX_ROWS;
 
 pub fn do_meta_command(command: &str, table: Rc<RwLock<Table>>) -> Result<(), String> {
     if command == ".exit" {
